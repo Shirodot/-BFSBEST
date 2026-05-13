@@ -1,4 +1,7 @@
 import java.util.*;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import javax.imageio.ImageIO;
 
 /**
  * ══════════════════════════════════════════════════════════
@@ -37,6 +40,51 @@ import java.util.*;
  * ══════════════════════════════════════════════════════════
  */
 public class BFSMultiThreshold {
+
+    // ── Load real image from file ────────────────────────────────────
+    // Put your image file in the current directory, e.g. "input.png"
+    private static int[][] loadImage(String filename) throws Exception {
+        File file = new File(filename);
+        if (!file.exists()) {
+            System.err.println("File not found: " + filename);
+            System.err.println("Available image files in current directory:");
+            File dir = new File(".");
+            for (File f : dir.listFiles((d, n) -> n.matches("(?i).*\\.(png|jpg|jpeg|gif|bmp)$"))) {
+                System.err.println("  - " + f.getName());
+            }
+            throw new IllegalArgumentException("Image file not found");
+        }
+        
+        BufferedImage bi = ImageIO.read(file);
+        if (bi == null) {
+            System.err.println("ERROR: Failed to read image file: " + filename);
+            System.err.println("Possible causes:");
+            System.err.println("  1. File format not supported (try PNG, JPG, GIF, BMP)");
+            System.err.println("  2. File is corrupted or in an unusual variant");
+            System.err.println("  3. File might be in a format requiring special codec");
+            System.err.println();
+            System.err.println("Solution: Try converting the image using ImageMagick:");
+            System.err.println("  convert " + filename + " -type Grayscale converted_" + filename);
+            throw new IllegalArgumentException("Unable to read image format");
+        }
+        
+        int height = bi.getHeight();
+        int width = bi.getWidth();
+        int[][] img = new int[height][width];
+        
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int rgb = bi.getRGB(x, y);
+                // Convert RGB to greyscale using standard formula
+                int r = (rgb >> 16) & 0xFF;
+                int g = (rgb >> 8) & 0xFF;
+                int b = rgb & 0xFF;
+                img[y][x] = (int)(0.299 * r + 0.587 * g + 0.114 * b);
+            }
+        }
+        System.out.printf("Image loaded: %s (%dx%d pixels)%n", filename, width, height);
+        return img;
+    }
 
     // ── Synthetic test image (16×16 greyscale, 3 distinct regions) ─────
     // Region 1 (background):  ~50   dark
@@ -258,6 +306,28 @@ public class BFSMultiThreshold {
         }
     }
 
+    static void saveSegmentedImage(int[][] seg, String filename) {
+        try {
+            int height = seg.length;
+            int width = seg[0].length;
+            BufferedImage bi = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+            
+            // Color map for regions: different shades of grey
+            int[] colors = {0x333333, 0x666666, 0x999999, 0xCCCCCC, 0xFFFFFF, 0xFF0000};
+            
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    int label = seg[y][x];
+                    int color = colors[Math.min(label, colors.length - 1)];
+                    bi.setRGB(x, y, color);
+                }
+            }
+            ImageIO.write(bi, "png", new File(filename));
+        } catch (Exception e) {
+            System.err.println("Error saving segmented image: " + e.getMessage());
+        }
+    }
+
     static void printHistogram(int[] h) {
         System.out.println("\nHistogram (grey-levels with count > 0):");
         System.out.printf("  %-12s %-10s%n", "Grey-level", "Count");
@@ -272,17 +342,35 @@ public class BFSMultiThreshold {
     // ══════════════════════════════════════════════════════════════════
     // MAIN — runs both single-threshold and multi-threshold variants
     // ══════════════════════════════════════════════════════════════════
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
 
-        // ── Generate synthetic test image ────────────────────────────
-        int[][] img = createTestImage();
-        int totalPixels = IMG_H * IMG_W;
-        printImage("Input Image (grey-level values):", img);
+        // ── Load image: either real image or synthetic test ───────────
+        int[][] img;
+        int totalPixels;
+        
+        if (args.length > 0) {
+            // Load real image: java BFSMultiThreshold input.png
+            img = loadImage(args[0]);
+            totalPixels = img.length * img[0].length;
+            System.out.printf("Using real image: %s (%d pixels)%n", args[0], totalPixels);
+        } else {
+            // Generate synthetic test image
+            img = createTestImage();
+            totalPixels = IMG_H * IMG_W;
+            System.out.println("Using synthetic test image (16×16)");
+            printImage("Input Image (grey-level values):", img);
+        }
 
         // ── STEP 1: Histogram ────────────────────────────────────────
         System.out.println("\n── STEP 1: Build Histogram h(i)  [O(N)] ──");
         int[] h = buildHistogram(img);
-        printHistogram(h);
+        // Only print full histogram for small images
+        if (img.length <= 20) {
+            printHistogram(h);
+        } else {
+            System.out.printf("Histogram built (%d grey-levels with count > 0)%n",
+                Arrays.stream(h).filter(x -> x > 0).toArray().length);
+        }
 
         // ── STEP 2: Cumulative sums ───────────────────────────────────
         System.out.println("\n── STEP 2: Build Cumulative Sums  [O(256)] ──");
@@ -325,7 +413,14 @@ public class BFSMultiThreshold {
         // STEP 6: Apply
         System.out.println("\n── STEP 6: Apply Single Threshold ──");
         int[][] seg1 = applyThresholds(img, thresh1);
-        printSegmented(seg1, 2);
+        if (img.length <= 20) {
+            printSegmented(seg1, 2);
+        } else {
+            System.out.println("Segmented image (region labels 0.." + (2 - 1) + "):");
+            System.out.printf("Output size: %dx%d pixels%n", seg1[0].length, seg1.length);
+            saveSegmentedImage(seg1, "segmented_k1.png");
+            System.out.println("✓ Saved as: segmented_k1.png");
+        }
 
         // ── DOUBLE THRESHOLD (k=2) ─────────────────────────────────────
         System.out.println("\n────────────────────────────────────────────────────────────");
@@ -340,7 +435,14 @@ public class BFSMultiThreshold {
         // STEP 6: Apply
         System.out.println("\n── STEP 6: Apply Double Threshold ──");
         int[][] seg2 = applyThresholds(img, thresh2);
-        printSegmented(seg2, 3);
+        if (img.length <= 20) {
+            printSegmented(seg2, 3);
+        } else {
+            System.out.println("Segmented image (region labels 0.." + (3 - 1) + "):");
+            System.out.printf("Output size: %dx%d pixels%n", seg2[0].length, seg2.length);
+            saveSegmentedImage(seg2, "segmented_k2.png");
+            System.out.println("✓ Saved as: segmented_k2.png");
+        }
 
         // ── TRIPLE THRESHOLD (k=3) ─────────────────────────────────────
         System.out.println("\n────────────────────────────────────────────────────────────");
@@ -354,7 +456,14 @@ public class BFSMultiThreshold {
 
         System.out.println("\n── STEP 6: Apply Triple Threshold ──");
         int[][] seg3 = applyThresholds(img, thresh3);
-        printSegmented(seg3, 4);
+        if (img.length <= 20) {
+            printSegmented(seg3, 4);
+        } else {
+            System.out.println("Segmented image (region labels 0.." + (4 - 1) + "):");
+            System.out.printf("Output size: %dx%d pixels%n", seg3[0].length, seg3.length);
+            saveSegmentedImage(seg3, "segmented_k3.png");
+            System.out.println("✓ Saved as: segmented_k3.png");
+        }
 
         // ── STEP 7: Time Complexity Analysis ──────────────────────────
         System.out.println("\n════════════════════════════════════════════════════════════");
